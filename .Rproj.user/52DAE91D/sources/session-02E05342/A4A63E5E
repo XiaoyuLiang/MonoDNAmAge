@@ -1,26 +1,27 @@
 {
-    "id": "9D03B501",
-    "path": "~/Library/CloudStorage/Box-Box/other/DNAmAge/ClockFunc.R",
+    "id": "A4A63E5E",
+    "path": "~/Desktop/Example.R",
     "project_path": null,
     "type": "r_source",
-    "hash": "0",
+    "hash": "803748739",
     "contents": "",
     "dirty": false,
-    "created": 1669143691532.0,
+    "created": 1669145898535.0,
     "source_on_save": false,
-    "relative_order": 3,
+    "relative_order": 2,
     "properties": {
+        "tempName": "Untitled1",
         "source_window_id": "",
         "Source": "Source",
-        "cursorPosition": "225,0",
-        "scrollLine": "208"
+        "cursorPosition": "2,0",
+        "scrollLine": "0"
     },
     "folds": "",
-    "lastKnownWriteTime": 1668026731,
+    "lastKnownWriteTime": 1669146360,
     "encoding": "UTF-8",
     "collab_server": "",
     "source_window": "",
-    "last_content_update": 1668026731,
+    "last_content_update": 1669146360671,
     "read_only": false,
     "read_only_alternatives": []
 }
