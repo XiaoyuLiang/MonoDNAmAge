@@ -1,0 +1,246 @@
+
+# All input should be CpG by Sample, rownames are CpG name, colnames are sample ID.
+
+################################################################################
+#####---------------------Hovath&Hannum&PhenoDNAmAge-----------------------#####
+################################################################################
+# if (!require("BiocManager", quietly = TRUE))
+#   install.packages("BiocManager")
+# BiocManager::install("MEAT")
+# BiocManager::install("ROC")
+# BiocManager::install("affyio")
+library(parallel)
+library(ENmix)
+library(MEAT)
+ThreeClockFunc <- function (beta, type = "all", fastImputation = FALSE, normalize = FALSE, 
+                      nCores = 1) 
+{
+  if (min(beta, na.rm = TRUE) < 0 | max(beta, na.rm = TRUE) > 
+      1) {
+    stop("Warning: Methylation beta value input should be within [0,1]")
+  }
+  hovath = data.frame()
+  hannum = data.frame()
+  phenoage = data.frame()
+  load(system.file("mage_ref.RData", package = "ENmix"))
+  missing_hovath = as.vector(hovath$cg[-1])[!(as.vector(hovath$cg[-1]) %in% 
+                                                rownames(beta))]
+  missing_hannum = as.vector(hannum$cg)[!(as.vector(hannum$cg) %in% 
+                                            rownames(beta))]
+  missing_phenoage = as.vector(phenoage$cg[-1])[!(as.vector(phenoage$cg[-1]) %in% 
+                                                    rownames(beta))]
+  missing = FALSE
+  if (length(missing_hovath) > 0) {
+    missing = TRUE
+    cat(length(missing_hovath), "CpG missed methy age calculation using Hovath method: ", 
+        missing_hovath)
+  }
+  if (length(missing_hannum) > 0) {
+    missing = TRUE
+    cat(length(missing_hannum), "CpG missed methy age calculation using Hannum method: ", 
+        missing_hannum)
+  }
+  if (length(missing_phenoage) > 0) {
+    missing = TRUE
+    cat(length(missing_phenoage), "CpG missed methy age calculation using phenoage method: ", 
+        missing_phenoage)
+  }
+  tmp = NULL
+  if (missing) {
+    cat("Warning: Methylation values for missing CpGs will be imputed with reference values, but the results will be less acurate")
+    clockcg = unique(c(as.vector(hovath$cg)[-1], as.vector(hannum$cg), 
+                       as.vector(phenoage$cg)[-1]))
+    missedcg = clockcg[!(clockcg %in% rownames(beta))]
+    if (length(missedcg) > 0) {
+      reference = refmeth[as.vector(refmeth$cg) %in% missedcg, 
+      ]
+      tmp = matrix(rep(reference$goldstandard, ncol(beta)), 
+                   nrow = length(missedcg))
+      rownames(tmp) = as.vector(reference$cg)
+      colnames(tmp) = colnames(beta)
+      tmp = t(tmp)
+    }
+  }
+  refmeth = refmeth[as.vector(refmeth$cg) %in% rownames(beta), 
+  ]
+  beta = beta[as.vector(refmeth$cg), ]
+  set.seed(1)
+  nSamples = ncol(beta)
+  beta = t(beta)
+  noMissingPerSample = apply(as.matrix(is.na(beta)), 1, sum)
+  if (!fastImputation & nSamples > 1) {
+    if (max(noMissingPerSample, na.rm = TRUE) > 0) {
+      dimnames1 = dimnames(beta)
+      beta = data.frame(t(impute::impute.knn(t(beta))$data))
+      dimnames(beta) = dimnames1
+    }
+  }
+  if (fastImputation | nSamples == 1) {
+    if (max(noMissingPerSample, na.rm = TRUE) > 0) {
+      dimnames1 = dimnames(beta)
+      for (i in which(noMissingPerSample > 0)) {
+        selectMissing1 = is.na(beta[i, ])
+        beta[i, selectMissing1] = as.numeric(refmeth$goldstandard[selectMissing1])
+      }
+      dimnames(beta) = dimnames1
+    }
+  }
+  if (normalize) {
+    nCores = min(floor(nrow(beta)/2), nCores)
+    if (nCores > detectCores()) {
+      nCores <- detectCores()
+    }
+    N = ceiling(nrow(beta)/(nCores))
+    parts = rep(1:nCores, each = N)[1:nrow(beta)]
+    bbb <- function(s, parts, dat) {
+      id = which(parts == s)
+      dat1 = dat[id, ]
+      BMIQcalibration(datM = dat1, goldstandard.beta = refmeth$goldstandard, 
+                      plots = FALSE)
+    }
+    resu <- mclapply(1:nCores, bbb, parts = parts, dat = beta, 
+                     mc.cores = nCores)
+    beta = as.matrix(do.call(rbind, resu))
+  }
+  beta = cbind(beta, tmp)
+  methyAge = data.frame(SampleID = rownames(beta))
+  if (type %in% c("all", "hovath")) {
+    datMethClock = beta[, as.character(hovath$cg[-1])]
+    trafo = function(x, adult.age = 20) {
+      x = (x + 1)/(1 + adult.age)
+      y = ifelse(x <= 1, log(x), x - 1)
+      y
+    }
+    anti.trafo = function(x, adult.age = 20) {
+      ifelse(x < 0, (1 + adult.age) * exp(x) - 1, (1 + 
+                                                     adult.age) * x + adult.age)
+    }
+    mAge = anti.trafo(hovath$coef[1] + as.matrix(datMethClock) %*% 
+                        as.numeric(hovath$coef[-1]))
+    methyAge$mAge_Hovath = mAge
+  }
+  if (type %in% c("all", "hannum")) {
+    datMethClock = beta[, as.character(hannum$cg)]
+    mAge = as.matrix(datMethClock) %*% as.numeric(hannum$coef)
+    methyAge$mAge_Hannum = mAge
+  }
+  if (type %in% c("all", "phenoAge")) {
+    datMethClock = beta[, as.character(phenoage$cg[-1])]
+    mAge = phenoage$coef[1] + as.matrix(datMethClock) %*% 
+      phenoage$coef[-1]
+    methyAge$PhenoAge = mAge
+  }
+  return(methyAge)
+}
+
+################################################################################
+#####-----------------------------TLDNAmAge--------------------------------#####
+################################################################################
+
+TLFunc=function(input,cp="Win"){
+  stopifnot(cp %in% c("Win","Mac","HPC"))
+  if(cp=="HPC"){
+    dir="/gpfs/ycga/project/ysm/xu_ke/xl535/"
+    source("~/mybiotools/r/myfunc.R")
+  }else if(cp=="Win"){
+    dir="C:/Users/xl535/Box Sync/"
+    source(paste0(dir,"scripts/myfunc.R"))
+  }else{
+    dir="/Users/liangx20/Library/CloudStorage/Box-Box/"
+    source(paste0(dir,"scripts/myfunc.R"))
+  }
+  load(paste0(dir,"other/DNAmAge/ClockData.RData"))
+  ##----------------------------------------------------------------##
+  info=ClockData$TeloData
+  probe.use=info$cg[-which(info$cg=="(Intercept)")]
+  miss.idx=which(!probe.use %in% rownames(input))
+  if(length(miss.idx)>0) probe.use=probe.use[-miss.idx]
+  info.rv=info[match(c("(Intercept)",probe.use),info$cg),]
+  input.rv=t(input[probe.use,])
+  predi_gold=cbind(rep(1,nrow(input.rv)),input.rv) %*% info.rv$coef
+  DNAmTL=predi_gold[,1]
+  return(DNAmTL)
+}
+
+################################################################################
+#####-----------------------------MonoDNAmAge------------------------------#####
+################################################################################
+
+MonoFunc=function(input,mean.trans=F,linear.trans=F,cp="Win"){
+  stopifnot(cp %in% c("Win","Mac","HPC"))
+  if(cp=="HPC"){
+    dir="/gpfs/ycga/project/ysm/xu_ke/xl535/"
+    source("~/mybiotools/r/myfunc.R")
+  }else if(cp=="Win"){
+    dir="C:/Users/xl535/Box Sync/"
+    source(paste0(dir,"scripts/myfunc.R"))
+  }else{
+    dir="/Users/liangx20/Library/CloudStorage/Box-Box/"
+    source(paste0(dir,"scripts/myfunc.R"))
+  }
+  load(paste0(dir,"other/DNAmAge/ClockData.RData"))
+  ##----------------------------------------------------------------##
+  MonoData=ClockData$MonoData
+  probe.gold=MonoData$cg[-1]
+  miss.idx=which(!probe.gold %in% rownames(input))
+  if (length(miss.idx)>0){
+    miss.probe=probe.gold[miss.idx] 
+    print(paste0(length(miss.idx)," Missing Probes: ",paste(miss.probe,collapse=" ")))
+    miss.probe.est=matrix(rep(MonoData[miss.probe,]$cg.mean,each=ncol(input)), ncol=ncol(input), byrow=TRUE)
+    rownames(miss.probe.est)=miss.probe
+    colnames(miss.probe.est)=colnames(input)
+    miss.probe.est=as.data.frame(miss.probe.est)
+    input.rv=rbind(input,miss.probe.est)
+  }else{
+    input.rv=input
+  } 
+  input.rv=input.rv[probe.gold,]
+  ##----------------------------------------------------------------##
+  stopifnot(all(rownames(input.rv)==probe.gold))
+  na.num=apply(input.rv, 1, function(x) sum(is.na(x)))
+  na.pro=rownames(input.rv)[which(na.num>0)]
+  if(length(na.pro)>0){
+    for(i in 1:length(na.pro)){
+      prb=na.pro[i]
+      input.rv[prb,is.na(input.rv[prb,])]=MonoData[prb,]$cg.mean
+    } 
+  }
+  ##----------------------------------------------------------------##
+  if(mean.trans){
+    mu1=rowMeans(input.rv)
+    mu2=MonoData[-1,]$cg.mean  
+    input.rv1=input.rv-mu1+mu2
+  }else{
+    input.rv1=input.rv
+  }
+  methy_gold=t(input.rv1)
+  stopifnot(all(colnames(methy_gold)==probe.gold))
+  predi_gold=cbind(rep(1,nrow(methy_gold)),methy_gold) %*% MonoData$coef
+  if(linear.trans){
+    predi_gold.out=0.877764024218443*predi_gold+17.9255109926324
+  }else{
+    predi_gold.out=predi_gold
+  }
+  return(predi_gold.out[,1])
+}
+
+################################################################################
+#####------------------------Combine Five Clocks---------------------------#####
+################################################################################
+
+ClockFunc=function(input=hadat,cp="Win"){
+  ThreeDNAmAge=ThreeClockFunc(beta = input)
+  MonoDNAmAge=MonoFunc(input = input,cp=cp)
+  TLDNAmAge=TLFunc(input = input,cp=cp)
+  stopifnot(all(ThreeDNAmAge$SampleID==names(MonoDNAmAge)))
+  stopifnot(all(ThreeDNAmAge$SampleID==names(TLDNAmAge)))
+  AllDNAmAge=ThreeDNAmAge
+  names(AllDNAmAge)[2:4]=c("HorvathDNAmAge", "HannumDNAmAge","PhenoDNAmAge")
+  AllDNAmAge$TLDNAmAge=TLDNAmAge
+  AllDNAmAge$MonoDNAmAge=MonoDNAmAge
+  return(AllDNAmAge)
+}
+
+################################################################################
+
+
